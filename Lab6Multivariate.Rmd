@@ -117,11 +117,12 @@ We're looking at Chlorophyll, so that has to do with Nutrients, maybe Temperatur
 # wq.dat.05_12.mean <- wq.dat.05_12.mean[-c(4)] #take out Field Notes
 # wq.dat.05_12.mean <- wq.dat.05_12.mean[-c(1, 5, 6)] #take out Depth, Lat, Long
 head(wq.dat.05_12.mean)
-lmwq <- as.list(c(1,2,3)) #seeding
+lmwq <- 1
 for (i in 1:31) { #I'm so sorry for my horrendous for loop, but I tried a couple of way to avoid it and I couldn't figure it out 
   
   lmwq[i] <- lm(wq.dat.05_12.mean$`Chlorophyll a` ~ as.matrix(wq.dat.05_12.mean[,i]), na.action = na.omit)  
   print(colnames(as.matrix(wq.dat.05_12.mean[,i])))
+  print(lmwq[i])
 }
 
 
@@ -313,6 +314,8 @@ stem(residuals(lm.nutrients))
 stem(residuals(lm.nitrogen))
 stem(residuals(lm.phosphorus))
 ```
+
+
 
 2. Parallel Regression- Parallel regression specifies an additive model, where there is one regression line (for the continuous predictor) which is displaced vertically according to the mean value of the discrete predictor. It hypothesizes that the only effect of the discrete predictor is to adjust the mean, but that the relation between the continuous predictor and the response variable is then the same for all classes of the discrete predictor.
 
