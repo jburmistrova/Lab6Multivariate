@@ -1,0 +1,433 @@
+---
+title: "Lab 6 - Multivariate"
+author: "Julia Burmistrova"
+output:
+  html_document:
+    df_print: paged
+---
+
+Using the Bay Delta WQ dataset:
+
+1. For the Water Years 2005-2012, develop a predictive model of the mean monthly Chl-a concentration in the California Bay Delta using  other mean monthly water quality variables.
+
+* Be sure to show your work, including multiple model comparison (or step models), provide quantification and explain the reasoning behind your final model selection.
+* Below you will find (1) Data Wrangling, (2) Check for correlation and regression assumptions, (3) A summary and comparison of 4 models developed
+
+* Which variables are highly correlated with the others? How did you account for this?
+* Below, in the (2) check for regression assumptions, you will see a check of highly correlated variables
+
+* Be sure to demonstrate that you have accounted for all assumptions in your regression. 
+* Assumptions are 
+
+* Identify any badly fitted observations, discuss whether your residuals are following expected patterns, and discuss whether there are any possible explanations for any poorly modeled observations.
+* Badly fitted observations: `Nitrite + Nitrate (Dissolved)` + `Organic Nitrogen (Dissolved)` + `Ammonia (Dissolved)`  `Phosphorus (Total)` + `Ortho-phosphate (Dissolved)` 
+- Possible explanations for poor fit: observations are correlated and covered in another observation (like total instead of just dissolved), there is no relationship to Chl-a, data was not properly collected and there actually is a good relationship with Chl-a
+* Well fitted observations: `Kjeldahl Nitrogen (Total)` + Oxygen + Temperature 
+- Oxygen and Temperature are highly correlated so I think that this is overfitting 
+* Residuals are found in  (3) A summary and comparison of 4 models developed
+
+*Quantify how much variance in mean monthly Chl-a is explained by the variables you selected. 
+* Variance is shown in (3) A summary and comparison of 4 models developed, the AIC for each variable is calculated in the step(lm()) nested function. 
+* Temperature showed the most explanation for Chl-a prediction 
+* Best model was the EPA model that included Temp, Oxygen, and Kjeldal Nit.
+- Had the highest adj-R^2 and the lowest AIC
+
+```{r}
+require(tidyverse)
+require(lubridate)
+require(corrplot)
+require(ggpubr)
+require(broom)
+```
+
+### (1) Data Wrangling ### 
+```{r}
+wq.dat <- read_csv("BayDeltaWQ.csv")
+
+#water year function found: https://stackoverflow.com/questions/40351788/plotting-a-non-standard-year-water-year-with-ggplot2
+wtr_yr <- function(dates, start_month=10) {
+  # Convert dates into POSIXlt
+  dates.posix = as.POSIXlt(dates)
+  # Year offset
+  offset = ifelse(dates.posix$mon >= start_month - 1, 1, 0)
+  # Water year
+  adj.year = dates.posix$year + 1900 + offset
+  # Return the water year
+  adj.year
+}
+
+wq.dat <- add_column(wq.dat, WaterYear = wtr_yr(wq.dat$SampleDate))
+wq.dat <-  add_column(wq.dat, Month = month(wq.dat$SampleDate))  
+
+wq.dat.05_12 <- subset(wq.dat, WaterYear > 2004 & WaterYear < 2013) # new tibble with just the water years 
+wq.dat.05_12[4:104] <- lapply(wq.dat.05_12[4:104], as.numeric) #turn everything to numberic that should be numeric
+
+head(wq.dat.05_12)
+
+## getting rid of all the columns with ONLY NAs in them
+wq.dat.05_12.no.na <- wq.dat.05_12 #seeding dataframe
+n <- 1
+ccount <- 0
+for (i in 1:104) { #I'm so sorry for my horrendous for loop
+  if (all(is.na(wq.dat.05_12[,i])) == T) {
+    ccount[n] <- i
+    n = n+1
+  }
+}
+ccount <- as.double(ccount)
+
+wq.dat.05_12.no.na <- wq.dat.05_12.no.na[-ccount] #take out all the columns that had only NAs
+head(wq.dat.05_12.no.na)
+
+
+wq.dat.05_12.mean <- wq.dat.05_12.no.na %>% #get the monthly means
+  group_by(Month, WaterYear) %>% 
+  summarize_all(mean, na.rm = TRUE)
+
+head(wq.dat.05_12.mean)
+
+## making a vector of the season according to wet and dry season which will be used in Q2
+# Looking at this website (https://www.timeanddate.com/weather/@5389649/climate)
+# * Averages are for Buchanan Field, which is 13 miles from Sacramento-San Joaquin Delta.
+# * Based on weather reports collected during 1985–2015.
+# - Wet months (>0.25 in rain) = November, December, January, Febrauary, March, April (11:12, 1:4)
+# - Dry months (<0.25 in rain) = May, June, July, August, September, October 
+
+season <- 1 #seeding season
+for (i in 1:length(wq.dat.05_12.mean$Month)) {
+   if (wq.dat.05_12.mean$Month[i] <= 4) {
+    season[i] <- "wet" }
+  else if (wq.dat.05_12.mean$Month[i] >=11) {
+    season[i] <- "wet" }
+  else if (wq.dat.05_12.mean$Month[i] >= 5 & wq.dat.05_12.mean$Month[i] <= 10) {
+    season[i] <- "dry" }
+}
+
+wq.dat.05_12.mean <- wq.dat.05_12.mean[c(-4,-5)] #get rid of sample date because it's not numeric but date, and station code because it's not necessary  
+
+wq.dat.05_12.mean[is.na(wq.dat.05_12.mean)] <- NA
+```
+So I removed Depth because all of the values were 3, so that factor is not helpful. I removed Latitude and Longitude because those values don't seem to be helpful either. 
+
+We're looking at Chlorophyll, so that has to do with Nutrients, maybe Temperature, Oxygen (eutrophication) (source:https://www.epa.gov/national-aquatic-resource-surveys/indicators-chlorophyll)
+
+```{r}
+#doing this because it makes calculating lm, remove all the "unnecessary" factors
+# wq.dat.05_12.mean <- wq.dat.05_12.mean[-c(1,2,3,4)] #take out Month, WaterYear, X1 and Station Code
+# wq.dat.05_12.mean <- wq.dat.05_12.mean[-c(4)] #take out Field Notes
+# wq.dat.05_12.mean <- wq.dat.05_12.mean[-c(1, 5, 6)] #take out Depth, Lat, Long
+head(wq.dat.05_12.mean)
+lmwq <- as.list(c(1,2,3)) #seeding
+for (i in 1:31) { #I'm so sorry for my horrendous for loop, but I tried a couple of way to avoid it and I couldn't figure it out 
+  
+  lmwq[i] <- lm(wq.dat.05_12.mean$`Chlorophyll a` ~ as.matrix(wq.dat.05_12.mean[,i]), na.action = na.omit)  
+  print(colnames(as.matrix(wq.dat.05_12.mean[,i])))
+}
+
+
+#lmwq <- step(lm( `Chlorophyll a` ~ ., data = wq.dat.05_12.mean)) #not good, why would we want to have a lm with 21 factors - overfitting! duh! 
+
+```
+### (2) Check for correlation and regression assumptions ### 
+Let's check correlation?
+* Nutrients are all positively (blue) correlated with eachother.
+* Suspended Solids (total and volatile) are corelated positively 
+* Carbon is correlated
+* Nitrite and Ammonia are positively correlated (nitrogen)
+* Conductance is highly correlated with Calcium (ion!!), Cholide (ion!!), and Solids (Total Dissolved) (not sure why that is chemically, could be coincidence?)
+- Calcium and Chloride are highly positively correlated because they are ions, interesting 
+* Oxygen is highly negatively correlated with Temperature
+* Secchi Depth and Carbon are natively correlated 
+* Temperature and Ammonia are highly correlated 
+
+* Cholorphyll is highly correlated with 
+- oxygen (negative)
+- ammonia (negative)
+- temperature (positive)
+
+```{r}
+#checking for correlations between factors
+mycorr <- cor(wq.dat.05_12.mean)
+corrplot(mycorr, method = "shade", tl.cex = 0.5)
+```
+
+Checking for Normality of Factors (requirement for linear regression)
+Ones that look non-linear are
+* Tubidity 
+* Silica (Dissolved)
+* Chlorophyll a! (So does that mean we can't predict using a linear model)
+- I will continue as planned
+
+```{r}
+#checking for normalilty of factors
+
+density.wq <-  lapply(wq.dat.05_12.mean, ggdensity)
+density.wq
+
+qq.wq <- lapply(wq.dat.05_12.mean, ggqqplot)
+qq.wq
+
+```
+
+Check for heteroscedastic
+* of the variables modelled, none of them look homoscedastic 
+```{r}
+#below are all the variables I modelled 
+pairs(~ Oxygen + Temperature + `Ammonia (Dissolved)` + `Kjeldahl Nitrogen (Total)` + `Nitrite + Nitrate (Dissolved)` + `Organic Nitrogen (Dissolved)` + `Ortho-phosphate (Dissolved)` + `Phosphorus (Total)`, data = wq.dat.05_12.mean)
+
+```
+
+### (3) A summary and comparison of 4 models developed ###
+
+Null Model
+
+```{r}
+lm.null <- lm(`Chlorophyll a` ~ 1, data = wq.dat.05_12.mean) 
+```
+
+
+Nitrogen Model 
+* It appears that following are the best nitrogen indicators (comparing AIC of factors)
+- Ammonia (best)
+- Kjeldahl Nitrogen (Total) (second best) 
+- Nutrients are highly correlated, so overfitting?!?!
+```{r}
+lm.nitrogen <- lm( `Chlorophyll a` ~ `Kjeldahl Nitrogen (Total)` + `Nitrite + Nitrate (Dissolved)` + `Organic Nitrogen (Dissolved)` + `Ammonia (Dissolved)`, data = wq.dat.05_12.mean)
+summary(lm.nitrogen) 
+```
+Phosphorus
+
+```{r}
+lm.phosphorus <- lm( `Chlorophyll a` ~ `Ortho-phosphate (Dissolved)` + `Phosphorus (Total)`, data = wq.dat.05_12.mean)
+summary(lm.phosphorus) 
+```
+
+Nutrients total
+
+```{r}
+
+lm.nutrients <- lm( `Chlorophyll a` ~`Kjeldahl Nitrogen (Total)` + `Nitrite + Nitrate (Dissolved)` + `Organic Nitrogen (Dissolved)` + `Ammonia (Dissolved)` + `Ortho-phosphate (Dissolved)` + `Phosphorus (Total)`, data = wq.dat.05_12.mean)
+summary(lm.nutrients) 
+
+```
+
+
+Temperature or Oxygen (?)
+* Temperature seems like a stronger indicator than Oxygen (lower AIC, BIC, and )
+
+```{r}
+lm.TO <- lm(`Chlorophyll a` ~ Oxygen + Temperature, data = wq.dat.05_12.mean)
+
+lm.O <- lm(`Chlorophyll a` ~ Oxygen, data = wq.dat.05_12.mean)
+lm.T <- lm(`Chlorophyll a` ~ Temperature, data = wq.dat.05_12.mean)
+
+```
+
+
+All EPA indicators Model (Nutrients and Oxygen and Temperature)
+              
+```{r}
+
+lm.EPA <- lm( `Chlorophyll a` ~ `Kjeldahl Nitrogen (Total)` + `Nitrite + Nitrate (Dissolved)` + `Organic Nitrogen (Dissolved)` + `Ammonia (Dissolved)` + Oxygen + Temperature + `Phosphorus (Total)` + `Ortho-phosphate (Dissolved)` , data = wq.dat.05_12.mean)
+
+
+summary(lm.EPA)
+```
+
+
+Compare and contrast [Copied directly from notes]
+* Best model was the EPA model that included Temp, Oxygen, and Nutrients has the best R^2 and adj-R^2  
+* Temp and Oxygen had the lowest AIC and BIC though
+* I would go with the EPA model, because Temp and Oxygen are highly correlated, and I think this weakens the power of the test
+* But EPA model also has covariates 
+
+```{r}
+lms <- list(null=lm.null, Temp.and.O2 = lm.TO , EPA = lm.EPA, Nutrients = lm.nutrients, Nitrogen = lm.nitrogen, Phosphorus = lm.phosphorus)
+lms.stats <- mapply(glance, lms)
+colnames(lms.stats) <- names(lms)
+lms.stats
+
+
+aic <- as.data.frame(unlist(lms.stats["AIC",]))
+colnames(aic) <- "AIC"
+aic
+
+bic <- as.data.frame(unlist(lms.stats["BIC",]))
+colnames(bic) <- "BIC"
+bic
+
+aic.bic <- cbind(aic,bic)
+a.b <- aic.bic %>% 
+  rownames_to_column() %>% 
+  gather(metric, value, -rowname) %>% 
+  ggplot(aes(rowname, value, fill = metric)) +
+  geom_bar(position = "dodge", stat = "identity")
+a.b
+```
+
+Check Between Oxygen and Temperature to see which is best indicator for Chl-a
+- Temp has lower AIC and BIC, so it is the best indicator
+
+```{r}
+
+lms <- list(null=lm.null, Temp = lm.T , Oxygen = lm.O)
+lms.stats <- mapply(glance, lms)
+colnames(lms.stats) <- names(lms)
+lms.stats
+
+
+aic <- as.data.frame(unlist(lms.stats["AIC",]))
+colnames(aic) <- "AIC"
+aic
+
+bic <- as.data.frame(unlist(lms.stats["BIC",]))
+colnames(bic) <- "BIC"
+bic
+
+aic.bic <- cbind(aic,bic)
+a.b <- aic.bic %>% 
+  rownames_to_column() %>% 
+  gather(metric, value, -rowname) %>% 
+  ggplot(aes(rowname, value, fill = metric)) +
+  geom_bar(position = "dodge", stat = "identity")
+a.b
+
+```
+
+
+ANOVA of models
+* I'm not really sure how to interpret these results (I'm not sure why model 3 has no p-value)
+* 
+```{r}
+a <- anova(lm.TO, lm.EPA, lm.nitrogen, lm.nutrients, lm.phosphorus)
+a
+```
+
+Residuals
+*Residuals do not look normal, but they do look evenly slit between positive and negatives 
+
+```{r}
+stem(residuals(lm.EPA))
+stem(residuals(lm.TO))
+stem(residuals(lm.nutrients))
+stem(residuals(lm.nitrogen))
+stem(residuals(lm.phosphorus))
+```
+
+2. Parallel Regression- Parallel regression specifies an additive model, where there is one regression line (for the continuous predictor) which is displaced vertically according to the mean value of the discrete predictor. It hypothesizes that the only effect of the discrete predictor is to adjust the mean, but that the relation between the continuous predictor and the response variable is then the same for all classes of the discrete predictor.
+
+Using your mean monthly water quality dataset for CA WY 2005-2012, create a new discrete value called "season", and assign a label to your data for "wet season" and "dry season" (you will have decide what constitutes wet and dry). Model the mean monthly Chl-a concentration as a function of season and the water quality variable you idenitifed as MOST important in explaining the variance of Chl-a from question 1. 
+
+Model them first separately, then as an additive model, e.g.:
+lm(Chl-a ~ season)
+lm(Chl-a ~ my_most_important_variable)
+lm(Chl-a ~ season + my_most_important_variable)
+* Completed below in Regression Analysis section
+How much of the variation in Chl-a is explained by season? By your most important variable? By both together? Is the combined model better than individual models? 
+* According to the statistics, combined model is better, but not by much.
+* Combined model vs. Temp adj R^2 is 0.25 vs 0.26 and AIC are both approximately 408
+* Since season and temperature are correlated, combining both of them seems like overfitting, so I would say that Temperature is really the better model. Not combined. 
+
+In the parallel regression model (season and your most important variable as predictors), what are the differences in the means between seasons? What is the slope of the linear regression after accounting for season? How does this compare with the slope of the linear regression not considering season?
+Are the residuals normally distributed? 
+Plot Chl-a vs your most important variable, with the observations colored by season. Add the paralell regression lines from the combined model in the appropraite colors, and add the univariate regression line.
+
+### Data Wrangling (adding season) ###
+Do I get to define what a season is too?
+
+Looking at this website (https://www.timeanddate.com/weather/@5389649/climate)
+* Averages are for Buchanan Field, which is 13 miles from Sacramento-San Joaquin Delta.
+* Based on weather reports collected during 1985–2015.
+- Wet months (>0.25 in rain) = November, December, January, Febrauary, March, April (11:12, 1:4)
+- Dry months (<0.25 in rain) = May, June, July, August, September, October 
+
+```{r}
+#adding season column from data wranging above
+wq.dat.05_12.mean <-  add_column(wq.dat.05_12.mean, Season = as.factor(season))  
+head(wq.dat.05_12.mean)
+```
+
+### Regression Analysis ###
+
+Linear Regression
+```{r}
+lm.season <- lm(`Chlorophyll a` ~ season, data = wq.dat.05_12.mean)
+lm.temp <- lm(`Chlorophyll a` ~ Temperature, data = wq.dat.05_12.mean)
+lm.season.temp <- lm(`Chlorophyll a` ~ season + Temperature, data = wq.dat.05_12.mean)
+
+summary(lm.season)
+summary(lm.temp)
+summary(lm.season.temp)
+```
+
+
+How much of the variation in Chl-a is explained by season? By your most important variable? By both together? Is the combined model better than individual models? 
+* According to the statistics, combined model is better, but not by much.
+* Combined model vs. Temp adj R^2 is 0.25 vs 0.26 and AIC are both approximately 408
+* Since season and temperature are correlated, combining both of them seems like overfitting, so I would say that Temperature is really the better model. Not combined. 
+```{r}
+
+lms <- list(null = lm.null, season = lm.season , temp = lm.temp, season.temp = lm.season.temp)
+lms.stats <- mapply(glance, lms)
+colnames(lms.stats) <- names(lms)
+lms.stats
+
+
+aic <- as.data.frame(unlist(lms.stats["AIC",]))
+colnames(aic) <- "AIC"
+aic
+
+bic <- as.data.frame(unlist(lms.stats["BIC",]))
+colnames(bic) <- "BIC"
+bic
+
+aic.bic <- cbind(aic,bic)
+a.b <- aic.bic %>% 
+  rownames_to_column() %>% 
+  gather(metric, value, -rowname) %>% 
+  ggplot(aes(rowname, value, fill = metric)) +
+  geom_bar(position = "dodge", stat = "identity")
+a.b
+```
+
+In the parallel regression model (season and your most important variable as predictors), what are the differences in the means between seasons? What is the slope of the linear regression after accounting for season? How does this compare with the slope of the linear regression not considering season?
+* means between wet and dry season shows differences in temperature, chl-a, solids, ammonia and nitrate/nitrite
+* slope of linear regression after accounting for the season increased minimally from 0.26406 (not considering season) to  0.38569 (season) (see above (lm) and below (ggplot))
+
+```{r}
+
+wq.dat.05_12.mean.season <- wq.dat.05_12.mean %>%
+  group_by(Season) %>% 
+  summarize_all(mean, na.rm = TRUE)
+
+#looking at the differences in means for wet vs dry season
+wq.dat.05_12.mean.season
+
+```
+
+Plot Chl-a vs your most important variable, with the observations colored by season. Add the paralell regression lines from the combined model in the appropraite colors, and add the univariate regression line.
+
+```{r}
+
+Temperature <- wq.dat.05_12.mean$Temperature
+chla <- wq.dat.05_12.mean$`Chlorophyll a`
+temp.chla <- tibble(Temperature, chla, season)
+
+
+lm.chla.temp <- lm(temp.chla$chla ~ temp.chla$Temperature)
+
+plot.temp.chla <- plot(temp.chla$Temperature, temp.chla$chla) + abline(lm.chla.temp)
+
+p <- ggplot(temp.chla, aes(Temperature, chla, shape = factor(season)))
+p + geom_point(aes(colour = factor(season)), size = 4) +
+  geom_point(colour = "grey90", size = 1.5) +
+  geom_abline(intercept = -0.62954, slope = 0.26406,colour = "green", show.legend = T)+  #from lm.chla.temp
+  geom_abline(intercept = 4.5820, slope = -1.7591,colour = "blue", show.legend = T) + #from lm.season
+  geom_abline(intercept = -3.23911 , slope = 1.22848,colour = "red", show.legend = T) + #from lm.season.temp (season)
+  geom_abline(intercept = -3.23911 , slope = 0.38569,colour = "cornflowerblue", show.legend = T) #from lm.season.temp (temp)
+
+#plot.temp.chla <- ggscatter(temp.chla, Temperature, chla) WON'T WORK FOR SOME REASON
+```
+
+
+3. Push your anser to your GitHub page. Post the link in your homework response on Catcourses.
