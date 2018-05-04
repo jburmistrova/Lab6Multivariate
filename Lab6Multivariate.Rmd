@@ -68,7 +68,7 @@ head(wq.dat.05_12)
 wq.dat.05_12.no.na <- wq.dat.05_12 #seeding dataframe
 n <- 1
 ccount <- 0
-for (i in 1:104) { #I'm so sorry for my horrendous for loop
+for (i in 1:ncol(wq.dat)) { #I'm so sorry for my horrendous for loop #Alan comment: I changed it to not be a specific number so the code can be more generalizable.
   if (all(is.na(wq.dat.05_12[,i])) == T) {
     ccount[n] <- i
     n = n+1
